@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package kv_cache;
+
+// Control plane service for distributed KV cache
+service KvCacheService {
+    // Get a value - server will RDMA write to client's buffer
+    rpc Get(GetRequest) returns (GetResponse);
+
+    // Put a value into the cache
+    rpc Put(PutRequest) returns (PutResponse);
+
+    // Delete a value from the cache
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+    // Register a client's RDMA endpoint
+    rpc RegisterClient(RegisterClientRequest) returns (RegisterClientResponse);
+
+    // Heartbeat to keep connection alive
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// RDMA memory region descriptor - contains info needed for remote write
+message MemoryRegionDescriptor {
+    uint64 ptr = 1;                      // Remote memory address
+    repeated DomainAddressKey addr_rkey_list = 2;  // Per-domain address and rkey
+}
+
+message DomainAddressKey {
+    bytes domain_address = 1;            // Network address of the domain
+    uint64 rkey = 2;                     // Remote key for RDMA access
+}
+
+// Location where a value is stored (or where to write response)
+message ValueLocation {
+    uint32 node_id = 1;
+    MemoryRegionDescriptor mr_descriptor = 2;
+    uint64 offset = 3;
+    uint64 length = 4;
+}
+
+// Get request - client provides its receive buffer location
+message GetRequest {
+    bytes key = 1;
+    ValueLocation response_location = 2;  // Where server should RDMA write the value
+    uint64 request_id = 3;                // For tracking/correlation
+}
+
+message GetResponse {
+    bool success = 1;
+    uint64 value_length = 2;              // Actual length of value written
+    string error_message = 3;             // Error details if not successful
+    uint64 request_id = 4;
+}
+
+// Put request - small values inline, large values via RDMA
+message PutRequest {
+    bytes key = 1;
+    oneof value_source {
+        bytes inline_value = 2;           // For small values (< 64KB)
+        ValueLocation rdma_location = 3;  // For large values, server reads from here
+    }
+    uint64 ttl_seconds = 4;               // 0 = no expiration
+}
+
+message PutResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+// Delete request
+message DeleteRequest {
+    bytes key = 1;
+}
+
+message DeleteResponse {
+    bool success = 1;
+    bool key_existed = 2;
+}
+
+// Client registration - share RDMA endpoint info
+message RegisterClientRequest {
+    uint32 client_id = 1;
+    repeated bytes domain_addresses = 2;  // Client's RDMA domain addresses
+    uint64 receive_buffer_size = 3;       // Size of client's receive buffer
+}
+
+message RegisterClientResponse {
+    bool success = 1;
+    uint32 server_id = 2;
+    repeated bytes server_domain_addresses = 3;  // Server's RDMA domain addresses
+}
+
+// Heartbeat
+message HeartbeatRequest {
+    uint32 client_id = 1;
+}
+
+message HeartbeatResponse {
+    bool alive = 1;
+}
