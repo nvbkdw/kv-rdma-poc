@@ -72,34 +72,48 @@ CLIENT                                    SERVER
 ## Building
 
 ```bash
-# Build the project
+# Build with mock RDMA (no hardware required, default)
 cargo build
 
-# Build in release mode
-cargo build --release
+# Build with real RDMA support (requires RDMA libraries)
+cargo build --features rdma --release
 
 # Run tests
 cargo test
 ```
 
+**Note**: By default, the project builds with mock RDMA for development. To use real EFA RDMA hardware, build with the `rdma` feature flag.
+
 ## Usage
 
 ### Starting the Server
 
+**With Mock RDMA (development/testing):**
 ```bash
-# Start with default settings (localhost:50051, 1GB memory pool)
+# Start with default settings (localhost:50051, 1GB memory pool, mock RDMA)
 cargo run --bin kv-server
 
 # Custom configuration
 cargo run --bin kv-server -- \
-  --listen-addr "[::1]:50051" \
+  --listen-addr "0.0.0.0:50051" \
   --memory-mb 2048 \
   --node-id 0 \
   --log-level debug
 ```
 
+**With Real EFA RDMA:**
+```bash
+# Server on machine 1
+./run-with-rdma.sh ./target/release/kv-server \
+  --mock false \
+  --listen-addr "0.0.0.0:50051" \
+  --memory-mb 2048 \
+  --log-level info
+```
+
 ### Using the Client
 
+**With Mock RDMA (development/testing):**
 ```bash
 # PUT a value
 cargo run --bin kv-client -- put mykey "hello world"
@@ -115,6 +129,27 @@ cargo run --bin kv-client -- repl
 
 # Run benchmark
 cargo run --bin kv-client -- bench --ops 1000 --value-size 1024
+```
+
+**With Real EFA RDMA (client on machine 2):**
+```bash
+# PUT a value
+./run-with-rdma.sh ./target/release/kv-client \
+  --mock false \
+  --server-addr "http://<server-ip>:50051" \
+  put mykey "hello world"
+
+# GET a value
+./run-with-rdma.sh ./target/release/kv-client \
+  --mock false \
+  --server-addr "http://<server-ip>:50051" \
+  get mykey
+
+# Benchmark
+./run-with-rdma.sh ./target/release/kv-client \
+  --mock false \
+  --server-addr "http://<server-ip>:50051" \
+  bench --ops 10000 --value-size 4096
 ```
 
 ### Client CLI Options
@@ -203,12 +238,36 @@ let (handle, descriptor) = engine.register_memory_allow_remote(ptr, len, device)
 engine.submit_transfer_async(request).await?;
 ```
 
+## Running with Real RDMA
+
+The `run-with-rdma.sh` helper script sets up the necessary library paths:
+
+```bash
+# The script sets LD_LIBRARY_PATH for:
+# - libgdrapi (GPU Direct RDMA)
+# - libfabric (custom build with EFA support)
+# - libcudart (CUDA runtime)
+
+# Then executes your command with proper environment
+./run-with-rdma.sh <command> [args...]
+```
+
+Alternatively, set the paths manually:
+```bash
+export LD_LIBRARY_PATH="/mnt/user-data/home/nvbkdw/workspace/fabric/build/gdrcopy-2.4.4/src:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/mnt/user-data/home/nvbkdw/workspace/fabric/build/libfabric/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+
+./target/release/kv-server --mock false --listen-addr "0.0.0.0:50051"
+```
+
 ## Performance Considerations
 
 - **Buffer size**: Larger receive buffers reduce allocation overhead but increase memory usage
 - **Value size threshold**: Small values (<64KB) are sent inline via gRPC; large values use RDMA
 - **Connection pooling**: gRPC connections are reused across requests
 - **Memory alignment**: Buffers are page-aligned (4KB) for optimal RDMA performance
+- **RDMA domains**: Configure `--num-domains` to use multiple NICs for higher throughput
 
 ## License
 

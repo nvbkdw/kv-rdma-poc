@@ -24,7 +24,7 @@ struct Args {
     buffer_mb: usize,
 
     /// Use mock transport (for testing without RDMA hardware)
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = false)]
     mock: bool,
 
     /// Log level (trace, debug, info, warn, error)

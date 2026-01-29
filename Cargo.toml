@@ -32,8 +32,13 @@ crossbeam = "0.8"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# fabric-lib for RDMA (optional, for real hardware)
-# fabric-lib = { path = "../pplx-garden/fabric-lib" }
+# fabric-lib for RDMA (optional)
+fabric-lib = { path = "../pplx-garden/fabric-lib", features = ["tokio"], optional = true }
+cuda-lib = { path = "../pplx-garden/rust/cuda-lib", optional = true }
+
+[features]
+default = []
+rdma = ["fabric-lib", "cuda-lib"]
 
 [build-dependencies]
 tonic-build = "0.12"
@@ -45,3 +50,7 @@ path = "src/bin/server.rs"
 [[bin]]
 name = "kv-client"
 path = "src/bin/client.rs"
+
+[[bin]]
+name = "test_topology"
+path = "src/bin/test_topology.rs"
