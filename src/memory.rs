@@ -3,7 +3,7 @@
 //! This module provides a simple memory pool that can be registered with RDMA
 //! for zero-copy data transfers.
 
-use crate::protocol::{DomainAddress, MemoryRegionDescriptor, MemoryRegionHandle, MemoryRegionRemoteKey};
+use crate::protocol::{MemoryRegionDescriptor, MemoryRegionHandle};
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -112,26 +112,28 @@ pub struct MemoryPool {
 impl MemoryPool {
     /// Create a new memory pool with the given configuration
     ///
-    /// In a real implementation, this would:
-    /// 1. Allocate page-aligned memory (or GPU memory)
-    /// 2. Register it with the RDMA transport
+    /// This will:
+    /// 1. Allocate page-aligned memory
+    /// 2. Register it with the RDMA transport (if provided)
     /// 3. Get the memory region descriptor for remote access
-    pub fn new(config: MemoryPoolConfig, node_id: u32, domain_addresses: Vec<DomainAddress>) -> Result<Self> {
+    pub fn new(
+        config: MemoryPoolConfig,
+        _node_id: u32,
+        transport: Option<&crate::transport::RdmaTransport>,
+    ) -> Result<Self> {
         // Allocate aligned buffer
         let mut buffer = vec![0u8; config.size];
-        let ptr = buffer.as_mut_ptr() as u64;
+        let ptr = buffer.as_mut_ptr();
 
-        // Create handle for local access
-        let handle = MemoryRegionHandle::new(ptr, config.size);
-
-        // Create descriptor for remote access
-        // In a real implementation, rkeys would come from RDMA registration
-        let addr_rkey_list: Vec<_> = domain_addresses
-            .into_iter()
-            .enumerate()
-            .map(|(i, addr)| (addr, MemoryRegionRemoteKey(i as u64)))
-            .collect();
-        let descriptor = MemoryRegionDescriptor::new(ptr, addr_rkey_list);
+        // Register memory with RDMA transport if provided
+        let (handle, descriptor) = if let Some(transport) = transport {
+            transport.register_memory(ptr, config.size)?
+        } else {
+            // Fallback: create fake registration for testing
+            let handle = MemoryRegionHandle::new(ptr as u64, config.size);
+            let descriptor = MemoryRegionDescriptor::new(ptr as u64, vec![]);
+            (handle, descriptor)
+        };
 
         let allocator = Mutex::new(BumpAllocator::new(config.size, config.alignment));
 
@@ -251,7 +253,7 @@ mod tests {
             size: 4096,
             alignment: 64,
         };
-        let pool = MemoryPool::new(config, 1, vec![]).unwrap();
+        let pool = MemoryPool::new(config, 1, None).unwrap();
 
         let alloc1 = pool.allocate(100).unwrap();
         assert_eq!(alloc1.offset, 0);
@@ -267,7 +269,7 @@ mod tests {
             size: 4096,
             alignment: 64,
         };
-        let mut pool = MemoryPool::new(config, 1, vec![]).unwrap();
+        let mut pool = MemoryPool::new(config, 1, None).unwrap();
 
         let data = b"Hello, RDMA!";
         pool.write(0, data).unwrap();

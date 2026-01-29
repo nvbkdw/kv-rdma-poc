@@ -76,7 +76,7 @@ impl KvCacheServer {
         let memory_pool = Arc::new(RwLock::new(MemoryPool::new(
             pool_config,
             config.node_id,
-            transport.domain_addresses(),
+            Some(&transport),
         )?));
 
         Ok(Self {
@@ -132,6 +132,8 @@ impl KvCacheServer {
         key: &[u8],
         response_location: &ValueLocation,
     ) -> Result<u64, Status> {
+        tracing::debug!("GET: Looking up key (len={})", key.len());
+
         // Look up the value
         let entry = self
             .cache
@@ -149,13 +151,18 @@ impl KvCacheServer {
         let src_offset = entry.offset;
         drop(entry); // Release DashMap ref before acquiring pool lock
 
+        tracing::debug!("GET: Found value, length={}, preparing RDMA transfer", value_len);
+
         // Get the pool's memory handle (release lock before await)
-        let (src_handle, request) = {
+        let request = {
             let pool = self.memory_pool.read();
             let src_handle = pool.handle();
 
+            tracing::debug!("GET: Creating transfer request - src_offset={}, dst_offset={}, length={}",
+                src_offset, response_location.offset, value_len);
+
             // Create transfer request
-            let request = TransferRequest {
+            TransferRequest {
                 src_handle,
                 src_offset,
                 length: value_len,
@@ -163,16 +170,22 @@ impl KvCacheServer {
                 dst_descriptor: response_location.mr_descriptor.clone(),
                 dst_offset: response_location.offset,
                 routing: DomainRouting::default(),
-            };
-            (src_handle, request)
+            }
         };
+
+        tracing::debug!("GET: Submitting RDMA write to client");
 
         // Perform RDMA write to client's buffer
         let result = self
             .transport
             .submit_transfer_async(request)
             .await
-            .map_err(|e| Status::internal(format!("Transfer failed: {}", e)))?;
+            .map_err(|e| {
+                tracing::error!("GET: Transfer failed: {}", e);
+                Status::internal(format!("Transfer failed: {}", e))
+            })?;
+
+        tracing::debug!("GET: Transfer completed, success={}", result.success);
 
         if !result.success {
             return Err(Status::internal(
@@ -180,6 +193,7 @@ impl KvCacheServer {
             ));
         }
 
+        tracing::info!("GET: Successfully transferred {} bytes via RDMA", value_len);
         Ok(value_len)
     }
 

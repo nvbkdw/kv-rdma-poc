@@ -84,7 +84,7 @@ impl KvCacheClient {
         let memory_pool = Arc::new(RwLock::new(MemoryPool::new(
             pool_config,
             config.client_id,
-            transport.domain_addresses(),
+            Some(&transport),
         )?));
 
         Ok(Self {
@@ -154,6 +154,8 @@ impl KvCacheClient {
     /// The server will RDMA write the value directly to our receive buffer.
     /// Returns the value data.
     pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
+        tracing::debug!("GET: Starting request for key (len={})", key.len());
+
         let mut client = self
             .grpc_client
             .lock()
@@ -167,19 +169,30 @@ impl KvCacheClient {
         // In production, you might want to query the value size first
         let max_value_size = 1024 * 1024; // 1MB max value
 
+        tracing::debug!("GET: Allocating receive buffer, size={}", max_value_size);
+
         let allocation = {
             let pool = self.memory_pool.read();
             pool.allocate(max_value_size)?
         };
 
+        tracing::debug!("GET: Allocated buffer at offset={}", allocation.offset);
+
         // Create response location with our buffer info
-        let pool = self.memory_pool.read();
-        let response_location = ValueLocation::new(
-            self.config.client_id,
-            pool.descriptor().clone(),
-            allocation.offset as u64,
-            max_value_size as u64,
-        );
+        let response_location = {
+            let pool = self.memory_pool.read();
+            let location = ValueLocation::new(
+                self.config.client_id,
+                pool.descriptor().clone(),
+                allocation.offset as u64,
+                max_value_size as u64,
+            );
+            drop(pool); // Explicitly release lock before await
+            location
+        };
+
+        tracing::debug!("GET: Created response location, ptr={:#x}, offset={}",
+            response_location.mr_descriptor.ptr, response_location.offset);
 
         // Track pending allocation
         self.pending.lock().insert(
@@ -193,6 +206,8 @@ impl KvCacheClient {
         // Send GET request
         let pb_response_location: crate::pb::ValueLocation = (&response_location).into();
 
+        tracing::debug!("GET: Sending gRPC request, request_id={}", request_id);
+
         let response = client
             .get(GetRequest {
                 key: key.to_vec(),
@@ -201,6 +216,9 @@ impl KvCacheClient {
             })
             .await?
             .into_inner();
+
+        tracing::debug!("GET: Received gRPC response, success={}, length={}",
+            response.success, response.value_length);
 
         // Get the pending allocation
         let pending = self
@@ -215,16 +233,28 @@ impl KvCacheClient {
             return Err(anyhow!("GET failed: {}", response.error_message));
         }
 
+        tracing::debug!("GET: Reading value from receive buffer");
+        tracing::debug!("GET: About to acquire read lock on memory pool");
+
         // Read the value from our receive buffer
         let value = {
+            tracing::debug!("GET: Acquiring read lock...");
             let pool = self.memory_pool.read();
-            pool.read(pending.allocation.offset, response.value_length as usize)?
-                .to_vec()
+            tracing::debug!("GET: Read lock acquired, reading at offset={}, len={}",
+                pending.allocation.offset, response.value_length);
+
+            let slice = pool.read(pending.allocation.offset, response.value_length as usize)?;
+            tracing::debug!("GET: Slice obtained, converting to vec...");
+
+            let vec = slice.to_vec();
+            tracing::debug!("GET: Converted to vec, length={}", vec.len());
+            vec
         };
 
-        // Deallocate the buffer
+        tracing::debug!("GET: Value read complete, deallocating buffer");
         self.memory_pool.write().deallocate(&pending.allocation);
 
+        tracing::info!("GET: Successfully retrieved value, length={}", value.len());
         Ok(value)
     }
 
