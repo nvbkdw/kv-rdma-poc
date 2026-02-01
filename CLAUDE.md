@@ -68,11 +68,47 @@ cargo run --bin kv-client -- delete mykey
 # Interactive REPL mode
 cargo run --bin kv-client -- repl
 
-# Run benchmark
+# Run simple benchmark
 cargo run --bin kv-client -- bench --ops 1000 --value-size 1024
 
 # Connect to remote server
 cargo run --bin kv-client -- --server-addr "http://remote-ip:50051" get mykey
+```
+
+### Benchmark (kv-bench)
+
+**IMPORTANT**: Requires RDMA hardware and `--features rdma` build flag.
+Mock transport does NOT work for separate processes.
+
+```bash
+# Build with RDMA support (use helper script to set environment variables)
+./build-with-rdma.sh all
+
+# Start server first
+./run-with-rdma.sh ./target/release/kv-server
+
+# Run read throughput benchmark with default settings
+./run-with-rdma.sh ./target/release/kv-bench
+
+# Custom benchmark with specific parameters
+./run-with-rdma.sh ./target/release/kv-bench \
+  --num-keys 5000 \
+  --value-size 1MB \
+  --num-threads 8 \
+  --buffer-mb 128
+
+# Test different value sizes
+./run-with-rdma.sh ./target/release/kv-bench --value-size 16KB --num-threads 4
+./run-with-rdma.sh ./target/release/kv-bench --value-size 1MB --num-threads 8
+
+# Connect to remote server
+./run-with-rdma.sh ./target/release/kv-bench \
+  --server-addr "http://remote-ip:50051"
+
+# For testing without RDMA hardware, use integration tests instead:
+cargo test
+
+# See BENCHMARK.md for more details
 ```
 
 ## Architecture

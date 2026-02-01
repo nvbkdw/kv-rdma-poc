@@ -54,3 +54,7 @@ path = "src/bin/client.rs"
 [[bin]]
 name = "test_topology"
 path = "src/bin/test_topology.rs"
+
+[[bin]]
+name = "kv-bench"
+path = "src/bin/bench.rs"

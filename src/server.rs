@@ -90,9 +90,12 @@ impl KvCacheServer {
 
     /// Get the gRPC service for this server
     pub fn into_service(self) -> KvCacheServiceServer<KvCacheServiceImpl> {
+        // Configure service to accept large messages (up to 128MB)
         KvCacheServiceServer::new(KvCacheServiceImpl {
             inner: Arc::new(self),
         })
+        .max_decoding_message_size(128 * 1024 * 1024) // 128MB receive limit
+        .max_encoding_message_size(128 * 1024 * 1024) // 128MB send limit
     }
 
     /// Get the listen address
@@ -365,7 +368,9 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     tracing::info!("Starting KV cache server on {}", addr);
 
+    // Configure tonic server for high concurrency
     tonic::transport::Server::builder()
+        .concurrency_limit_per_connection(256) // Allow up to 256 concurrent requests per connection
         .add_service(server.into_service())
         .serve(addr)
         .await?;

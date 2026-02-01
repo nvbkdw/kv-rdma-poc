@@ -106,7 +106,10 @@ impl KvCacheClient {
             .connect()
             .await?;
 
-        let mut client = KvCacheServiceClient::new(channel);
+        // Configure gRPC client to handle large messages (up to 128MB)
+        let mut client = KvCacheServiceClient::new(channel)
+            .max_decoding_message_size(128 * 1024 * 1024) // 128MB receive limit
+            .max_encoding_message_size(128 * 1024 * 1024); // 128MB send limit
 
         // Register with the server
         let domain_addresses: Vec<Vec<u8>> = self
@@ -259,6 +262,9 @@ impl KvCacheClient {
     }
 
     /// Put a value into the server's cache
+    ///
+    /// Supports values up to 64MB sent inline via gRPC.
+    /// For larger values, consider implementing RDMA-based PUT.
     pub async fn put(&self, key: &[u8], value: &[u8], ttl_seconds: u64) -> Result<()> {
         let mut client = self
             .grpc_client
@@ -266,14 +272,18 @@ impl KvCacheClient {
             .clone()
             .ok_or_else(|| anyhow!("Not connected"))?;
 
-        // For small values, send inline
-        // For large values, we could use RDMA (not implemented yet)
-        let value_source = if value.len() < 64 * 1024 {
-            crate::pb::put_request::ValueSource::InlineValue(value.to_vec())
-        } else {
-            // TODO: Implement RDMA-based PUT for large values
-            return Err(anyhow!("Large value PUT via RDMA not yet implemented"));
-        };
+        // Check maximum value size (64MB limit for gRPC inline)
+        const MAX_VALUE_SIZE: usize = 64 * 1024 * 1024; // 64MB
+        if value.len() > MAX_VALUE_SIZE {
+            return Err(anyhow!(
+                "Value too large: {} bytes (max {} MB supported via gRPC)",
+                value.len(),
+                MAX_VALUE_SIZE / (1024 * 1024)
+            ));
+        }
+
+        // Send value inline via gRPC
+        let value_source = crate::pb::put_request::ValueSource::InlineValue(value.to_vec());
 
         let response = client
             .put(PutRequest {

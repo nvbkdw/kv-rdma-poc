@@ -34,12 +34,13 @@ struct Args {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Number of worker threads for processing requests
+    #[arg(long, default_value = "4")]
+    worker_threads: usize,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-
+async fn run_with_config(args: Args) -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
 
     let config = ServerConfig {
         node_id: args.node_id,
-        listen_addr: args.listen_addr,
+        listen_addr: args.listen_addr.clone(),
         memory_pool_size: args.memory_mb * 1024 * 1024,
         transport: TransportConfig {
             node_id: args.node_id,
@@ -59,7 +60,25 @@ async fn main() -> Result<()> {
         },
     };
 
-    tracing::info!("Starting KV cache server with config: {:?}", config);
+    tracing::info!("=== KV Cache Server Configuration ===");
+    tracing::info!("Worker threads: {}", args.worker_threads);
+    tracing::info!("Listen address: {}", args.listen_addr);
+    tracing::info!("Memory pool: {} MB", args.memory_mb);
+    tracing::info!("Node ID: {}", args.node_id);
+    tracing::info!("Transport: {}", if args.mock { "Mock" } else { "RDMA" });
+    tracing::info!("======================================");
 
     run_server(config).await
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let worker_threads = args.worker_threads;
+
+    // Build tokio runtime with specified number of worker threads
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()?
+        .block_on(run_with_config(args))
 }

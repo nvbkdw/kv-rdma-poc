@@ -104,8 +104,7 @@ cargo run --bin kv-server -- \
 **With Real EFA RDMA:**
 ```bash
 # Server on machine 1
-./run-with-rdma.sh ./target/release/kv-server \
-  --mock false \
+./run-with-rdma.sh server \
   --listen-addr "0.0.0.0:50051" \
   --memory-mb 2048 \
   --log-level info
@@ -127,29 +126,30 @@ cargo run --bin kv-client -- delete mykey
 # Interactive REPL
 cargo run --bin kv-client -- repl
 
-# Run benchmark
+# Run simple benchmark
 cargo run --bin kv-client -- bench --ops 1000 --value-size 1024
+
+# Run advanced throughput benchmark (requires RDMA hardware)
+cargo run --release --bin kv-bench --features rdma -- \
+  --num-keys 1000 --value-size 64KB --num-threads 4
 ```
 
 **With Real EFA RDMA (client on machine 2):**
 ```bash
 # PUT a value
-./run-with-rdma.sh ./target/release/kv-client \
-  --mock false \
+./run-with-rdma.sh client \
   --server-addr "http://<server-ip>:50051" \
   put mykey "hello world"
 
 # GET a value
-./run-with-rdma.sh ./target/release/kv-client \
-  --mock false \
+./run-with-rdma.sh client \
   --server-addr "http://<server-ip>:50051" \
   get mykey
 
 # Benchmark
-./run-with-rdma.sh ./target/release/kv-client \
-  --mock false \
+./run-with-rdma.sh bench \
   --server-addr "http://<server-ip>:50051" \
-  bench --ops 10000 --value-size 4096
+  --num-workers 16
 ```
 
 ### Client CLI Options
@@ -167,8 +167,45 @@ Commands:
   put <key> <value>       Put a value (--ttl for expiration)
   delete <key>            Delete a value
   repl                    Interactive mode
-  bench                   Run benchmark
+  bench                   Run simple benchmark
 ```
+
+### Advanced Benchmarking
+
+For comprehensive read throughput testing with multiple threads, use the dedicated benchmark tool.
+
+**IMPORTANT**: The benchmark requires RDMA hardware and the `rdma` feature flag:
+
+```bash
+# Build with RDMA support (sets required environment variables)
+./build-with-rdma.sh all
+
+# Start server
+./run-with-rdma.sh server
+
+# Run benchmark with default settings
+./run-with-rdma.sh bench
+
+# Customize benchmark parameters
+./run-with-rdma.sh bench \
+  --num-keys 5000 \
+  --value-size 1MB \
+  --num-workers 32 \
+  --buffer-mb 128
+
+# See all options
+./run-with-rdma.sh bench --help
+```
+
+The benchmark measures:
+- Write throughput (single thread)
+- Read throughput (multiple threads)
+- Operations per second
+- Latency statistics (min, median, avg, p95, p99, max)
+
+**Note**: Mock transport doesn't work for separate server/benchmark processes. For testing without RDMA hardware, use `cargo test` instead.
+
+See [BENCHMARK.md](./BENCHMARK.md) for detailed documentation and example scenarios.
 
 ## Project Structure
 
@@ -188,9 +225,12 @@ kv-rdma-poc/
 │   ├── client.rs            # KV cache client
 │   └── bin/
 │       ├── server.rs        # Server CLI
-│       └── client.rs        # Client CLI
-└── tests/
-    └── integration_test.rs  # Integration tests
+│       ├── client.rs        # Client CLI
+│       └── bench.rs         # Throughput benchmark
+├── tests/
+│   └── integration_test.rs  # Integration tests
+├── BENCHMARK.md             # Benchmark documentation
+└── CLAUDE.md                # Claude Code instructions
 ```
 
 ## Key Concepts
@@ -243,14 +283,23 @@ engine.submit_transfer_async(request).await?;
 The `run-with-rdma.sh` helper script sets up the necessary library paths:
 
 ```bash
-# The script sets LD_LIBRARY_PATH for:
-# - libgdrapi (GPU Direct RDMA)
-# - libfabric (custom build with EFA support)
-# - libcudart (CUDA runtime)
+# Usage: ./run-with-rdma.sh {server|client|bench} [args...]
 
-# Then executes your command with proper environment
-./run-with-rdma.sh <command> [args...]
+# Start server
+./run-with-rdma.sh server
+
+# Run client commands
+./run-with-rdma.sh client get mykey
+./run-with-rdma.sh client put mykey myvalue
+
+# Run benchmark
+./run-with-rdma.sh bench --num-workers 32
 ```
+
+The script automatically:
+- Sets `LD_LIBRARY_PATH` for libgdrapi, libfabric, and CUDA
+- Runs the appropriate binary (`kv-server`, `kv-client`, or `kv-bench`)
+- Passes through all additional arguments
 
 Alternatively, set the paths manually:
 ```bash
@@ -258,7 +307,7 @@ export LD_LIBRARY_PATH="/mnt/user-data/home/nvbkdw/workspace/fabric/build/gdrcop
 export LD_LIBRARY_PATH="/mnt/user-data/home/nvbkdw/workspace/fabric/build/libfabric/lib:${LD_LIBRARY_PATH}"
 export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
-./target/release/kv-server --mock false --listen-addr "0.0.0.0:50051"
+./target/release/kv-server --listen-addr "0.0.0.0:50051"
 ```
 
 ## Performance Considerations
